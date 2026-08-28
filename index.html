@@ -3505,7 +3505,15 @@ function regenerateAllCanvases() {
 
         try {
             addDebugStep('Reading image file…');
-            const prep = await decodeImageToCanvas(file, { maxDimension: 5600, maxPixels: 24000000 });
+            // iPad/iPhone Safari has a much smaller effective per-tab memory budget than
+            // desktop browsers, and decoding a large pattern (e.g. 3600x3600) at full
+            // resolution — even briefly, before any downscale kicks in — can exceed it
+            // and get the tab killed/reloaded by the OS. Cap harder on that browser only;
+            // everywhere else keeps full working resolution.
+            const decodeLimits = isAppleMobileSafari()
+                ? { maxDimension: 2200, maxPixels: 4200000 }
+                : { maxDimension: 5600, maxPixels: 24000000 };
+            const prep = await decodeImageToCanvas(file, decodeLimits);
             addDebugStep(`Image decoded: ${prep.originalWidth} × ${prep.originalHeight}px`, {
                 sourceWidth: prep.originalWidth,
                 sourceHeight: prep.originalHeight,
