@@ -1270,7 +1270,7 @@ window.addEventListener("load", () => {
 <div class="header">
 <h1>✿ Seamless Studio ✿</h1>
 <div class="subtitle">Bringimg  your patterns to life... </div>
-<div style="margin-top:4px; font-size:11px; color:rgba(255,255,255,0.4); font-family:monospace;">build 2026-08-28-5</div>
+<div style="margin-top:4px; font-size:11px; color:rgba(255,255,255,0.4); font-family:monospace;">build 2026-08-28-6</div>
 <!-- <div style="margin-top:8px; font-size:13px; color:rgba(255,255,255,0.72);">Seamless items are auto-fitted. Non-seamless items can be resized in preview.</div>!-->
 </div>
 <div class="main-layout">
@@ -2456,6 +2456,12 @@ function drawPattern(ctx, targetW, targetH, scale, useTiled, product = null, pos
             }
         };
 
+        // Apple Pencil rendering builds a scratch canvas (cachedSharpTile) via
+        // createSharpScaledTileForRender(). drawPattern() is called very often
+        // (every product thumbnail, zoom, and export), so that scratch canvas must
+        // be released on every exit path here rather than left for GC, which iOS
+        // Safari can be slow to actually reclaim.
+        try {
         if (useTiled && product) {
             const metrics = getWrapRepeatMetrics(product, scale);
             const tileW = Math.max(1, metrics.tileW);
@@ -2535,6 +2541,11 @@ function drawPattern(ctx, targetW, targetH, scale, useTiled, product = null, pos
                     Math.ceil(tileW),
                     Math.ceil(tileH)
                 );
+            }
+        }
+        } finally {
+            if (cachedSharpTile && cachedSharpTile !== originalImg) {
+                releaseCanvasMemory(cachedSharpTile);
             }
         }
     }
@@ -2635,6 +2646,12 @@ function regenerateAllCanvases() {
                 console.error('Thumbnail failed:', p && p.name, thumbErr);
                 thumbFailed = true;
             }
+            // iOS Safari can be slow to reclaim a canvas's backing store via GC alone
+            // even once it's unreachable. renderProductGrid() runs often (every upload,
+            // selection change, reposition, unit toggle...) and allocates 8 fresh thumb
+            // canvases each time, so leaving that to GC risks accumulating real memory
+            // across a session. Zero it explicitly now that we have the dataURL.
+            releaseCanvasMemory(thumb);
 
             let isPerfectWrap = false;
             let repeats = 0;
@@ -3020,6 +3037,9 @@ function regenerateAllCanvases() {
             ctx.globalCompositeOperation = 'multiply';
             ctx.drawImage(shading, 0, 0, canvas.width, canvas.height);
             ctx.globalCompositeOperation = 'source-over';
+
+            releaseCanvasMemory(tileCanvas);
+            releaseCanvasMemory(patternLayer);
 
             zoomInfo.innerHTML = `Mug Wrap preview · full mug preview · export remains ${formatDimension(products[idx].w)} × ${formatDimension(products[idx].h)}`;
             currentZoomMode = 'mug-mockup';
