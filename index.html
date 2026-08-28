@@ -3385,7 +3385,7 @@ function regenerateAllCanvases() {
 
     function canvasLooksEmptyOrBlack(canvas) {
         try {
-            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            const ctx = canvas.getContext('2d');
             const w = canvas.width;
             const h = canvas.height;
             if (!w || !h) return true;
@@ -3454,7 +3454,12 @@ function regenerateAllCanvases() {
             const outCanvas = document.createElement('canvas');
             outCanvas.width = outW;
             outCanvas.height = outH;
-            const outCtx = outCanvas.getContext('2d', { alpha: true, willReadFrequently: true });
+            // No willReadFrequently: this canvas becomes originalImg and is drawImage()'d
+            // from for the whole session. That hint forces a CPU-backed (not GPU) canvas,
+            // which is a memory tax worth paying for the one-off pixel sample below but
+            // not for the pattern's entire lifetime — on iPad Safari it was contributing
+            // to memory-pressure crashes on large patterns.
+            const outCtx = outCanvas.getContext('2d', { alpha: true });
             if (!outCtx) throw new Error('Your browser could not create a canvas preview.');
             outCtx.imageSmoothingEnabled = true;
             outCtx.imageSmoothingQuality = 'high';
