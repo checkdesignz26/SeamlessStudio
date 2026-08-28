@@ -2012,6 +2012,35 @@ ctx.lineWidth = 1;
         return { drawX, drawY, drawW, drawH, scale };
     }
 
+    // Renders a grid thumbnail straight from the source pattern at thumbnail
+    // resolution, without ever allocating a full print-resolution (p.w x p.h)
+    // canvas. drawPattern() sizes its tiling relative to whatever targetW/targetH
+    // it's given, so this looks identical to downsampling a full-res render.
+    function drawProductPreviewThumbDirect(ctx, product, index, thumbW, thumbH, padding = 20) {
+        ctx.clearRect(0, 0, thumbW, thumbH);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.fillStyle = '#0a0a1a';
+        ctx.fillRect(0, 0, thumbW, thumbH);
+
+        const scale = Math.min((thumbW - (padding * 2)) / product.w, (thumbH - (padding * 2)) / product.h);
+        const drawW = Math.max(1, Math.round(product.w * scale));
+        const drawH = Math.max(1, Math.round(product.h * scale));
+        const drawX = (thumbW - drawW) / 2;
+        const drawY = (thumbH - drawH) / 2;
+
+        const useTiled = (product.type === "wrap" || product.type === "fixed");
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(drawX, drawY, drawW, drawH);
+        ctx.clip();
+        ctx.translate(drawX, drawY);
+        drawPattern(ctx, drawW, drawH, getRenderScale(product, index), useTiled, product, getPositionState(index));
+        ctx.restore();
+
+        return { drawX, drawY, drawW, drawH, scale };
+    }
+
     function renderFlowPreview(canvas, zoomMode = false, zoomPercent = 100) {
         if (!originalImg || !patternWidth || !patternHeight) return;
 
@@ -2509,52 +2538,26 @@ function drawPattern(ctx, targetW, targetH, scale, useTiled, product = null, pos
         }
     }
 
+// Memory guard: holding all 8 full-print-resolution canvases (some 3000-3600px
+// per side at 300 DPI) alive at once can exceed the per-tab memory budget on
+// iPad/mobile Safari and crash the tab. productCanvases[] is therefore lazy:
+// these two functions only invalidate the cache; grid thumbnails are drawn
+// directly at thumbnail size (see drawProductPreviewThumbDirect), and a full
+// canvas is built on demand via updateProductCanvas() only when something
+// actually needs full resolution (zoom view, mug mockup, download).
 function regenerateAllCanvases() {
         if (!originalImg) return;
         clearStoredProductCanvases();
-        for (let i = 0; i < products.length; i++) {
-            const p = products[i];
-            try {
-                const canvas = document.createElement('canvas');
-                canvas.width = p.w;
-                canvas.height = p.h;
-                canvas.style.imageRendering = 'high-quality';
-                const ctx = canvas.getContext('2d');
-                if (!ctx) throw new Error('Canvas context unavailable');
-                const useTiled = (p.type === "wrap" || p.type === "fixed");
-                drawPattern(ctx, p.w, p.h, getRenderScale(p, i), useTiled, p, getPositionState(i));
-                productCanvases.push(canvas);
-            } catch (err) {
-                console.error('Preview canvas failed:', p && p.name, err);
-                productCanvases.push(null);
-            }
-        }
+        productCanvases = new Array(products.length).fill(null);
     }
 
     async function regenerateAllCanvasesSafely() {
         if (!originalImg) return;
+        addDebugStep('Preparing previews…');
         clearStoredProductCanvases();
         productCanvases = new Array(products.length).fill(null);
-        for (let i = 0; i < products.length; i++) {
-            const p = products[i];
-            addDebugStep(`Generating preview ${i + 1}/${products.length}: ${p.name}`);
-            try {
-                const canvas = document.createElement('canvas');
-                canvas.width = p.w;
-                canvas.height = p.h;
-                canvas.style.imageRendering = 'high-quality';
-                const ctx = canvas.getContext('2d');
-                if (!ctx) throw new Error('Canvas context unavailable');
-                const useTiled = (p.type === "wrap" || p.type === "fixed");
-                drawPattern(ctx, p.w, p.h, getRenderScale(p, i), useTiled, p, getPositionState(i));
-                productCanvases[i] = canvas;
-            } catch (err) {
-                addDebugStep(`Preview failed for ${p.name}: ${err.message || err}`);
-                productCanvases[i] = null;
-            }
-            await safariMemoryBreather();
-        }
-        addDebugStep('Preview generation finished', { products: productCanvases.filter(Boolean).length });
+        await safariMemoryBreather();
+        addDebugStep('Preview generation finished', { products: products.length });
     }
 
     function updateProductCanvas(index) {
@@ -2568,6 +2571,15 @@ function regenerateAllCanvases() {
         const useTiled = (p.type === "wrap" || p.type === "fixed");
         drawPattern(ctx, p.w, p.h, getRenderScale(p, index), useTiled, p, getPositionState(index));
         productCanvases[index] = canvas;
+    }
+
+    function ensureProductCanvas(index) {
+        if (!originalImg) return null;
+        if (!productCanvases[index]) {
+            try { updateProductCanvas(index); }
+            catch (err) { console.error('Full-resolution canvas failed:', products[index] && products[index].name, err); }
+        }
+        return productCanvases[index] || null;
     }
 
     function showTileZoom() {
@@ -2602,7 +2614,6 @@ function regenerateAllCanvases() {
 
         for (let i = 0; i < products.length; i++) {
             const p = products[i];
-            const canvas = productCanvases[i];
 
             let thumbDataUrl = '';
             let thumbFailed = false;
@@ -2617,8 +2628,7 @@ function regenerateAllCanvases() {
             tCtx.fillRect(0, 0, thumb.width, thumb.height);
 
             try {
-                if (!canvas) throw new Error('No preview canvas');
-                drawProductPreviewThumb(tCtx, canvas, p, thumb.width, thumb.height, 20);
+                drawProductPreviewThumbDirect(tCtx, p, i, thumb.width, thumb.height, 20);
                 thumbDataUrl = thumb.toDataURL('image/png');
             } catch (thumbErr) {
                 console.error('Thumbnail failed:', p && p.name, thumbErr);
@@ -2865,16 +2875,16 @@ function regenerateAllCanvases() {
     }
 
     function showProductZoom(idx) {
-        if (!productCanvases[idx]) return;
-        if (zoomModalContent) zoomModalContent.classList.remove('preview-only');
-
-        const canvas = productCanvases[idx];
         const prod = products[idx];
+        if (!prod) return;
         if (isLockedSeamlessProduct(prod) && prod.type !== 'wrap') {
             prod.type = 'wrap';
             scales[idx] = calculatePerfectSeamlessScale(prod);
             updateProductCanvas(idx);
         }
+        const canvas = ensureProductCanvas(idx);
+        if (!canvas) return;
+        if (zoomModalContent) zoomModalContent.classList.remove('preview-only');
 
         zoomCanvas.width = canvas.width;
         zoomCanvas.height = canvas.height;
@@ -2933,7 +2943,7 @@ function regenerateAllCanvases() {
 
     async function showMugMockup(idx) {
         try {
-            const designCanvas = productCanvases[idx];
+            const designCanvas = ensureProductCanvas(idx);
             if (!designCanvas) {
                 showToast('Pattern preview not ready yet');
                 return;
@@ -3635,38 +3645,48 @@ function regenerateAllCanvases() {
 
     downloadBtn.onclick = async () => {
         if (!originalImg) return;
-        const items = [];
+        const indices = [];
         for (let i = 0; i < products.length; i++) {
-            if (selected[i] && isVisibleProductIndex(i)) items.push({ index: i, name: products[i].name, canvas: productCanvases[i] });
+            if (selected[i] && isVisibleProductIndex(i)) indices.push(i);
         }
-        if (items.length === 0) { alert('select at least one product'); return; }
+        if (indices.length === 0) { alert('select at least one product'); return; }
 
         const prefix = patternNameInput.value.trim() || 'pattern';
         const safePrefix = prefix.replace(/[^a-z0-9_-]/gi, '_').toLowerCase();
         const format = outputFormatSelect.value;
         const ext = format === 'jpeg' ? 'jpg' : format;
 
-        showToast(`✨ Preparing ${format.toUpperCase()} design${items.length > 1 ? 's' : ''} at 300 DPI...`, 1500);
+        showToast(`✨ Preparing ${format.toUpperCase()} design${indices.length > 1 ? 's' : ''} at 300 DPI...`, 1500);
         downloadBtn.disabled = true;
 
         try {
-            if (items.length === 1) {
-                const item = items[0];
-                const blob = await exportProductBlob(products[item.index], item.canvas, getRenderScale(products[item.index], item.index));
-                const cleanName = item.name.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+            if (indices.length === 1) {
+                const index = indices[0];
+                const canvas = ensureProductCanvas(index);
+                if (!canvas) throw new Error('Could not build that design.');
+                const blob = await exportProductBlob(products[index], canvas, getRenderScale(products[index], index));
+                const cleanName = products[index].name.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
                 await triggerDownload(blob, `${safePrefix}_${cleanName}.${ext}`);
                 showToast(`✅ Saved 1 design!`, 2000);
             } else {
+                // Build and export one full-resolution canvas at a time, releasing it
+                // immediately after zipping — holding all selected print-size canvases
+                // alive at once is what crashes memory-limited (e.g. iPad Safari) tabs.
                 const zip = new JSZip();
-                for (let i = 0; i < items.length; i++) {
-                    const productIndex = items[i].index;
-                    const blob = await exportProductBlob(products[productIndex], items[i].canvas, getRenderScale(products[productIndex], productIndex));
-                    const cleanName = items[i].name.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+                for (let i = 0; i < indices.length; i++) {
+                    const index = indices[i];
+                    const canvas = ensureProductCanvas(index);
+                    if (!canvas) continue;
+                    const blob = await exportProductBlob(products[index], canvas, getRenderScale(products[index], index));
+                    const cleanName = products[index].name.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
                     zip.file(`${safePrefix}_${cleanName}.${ext}`, blob);
+                    releaseCanvasMemory(canvas);
+                    productCanvases[index] = null;
+                    await safariMemoryBreather();
                 }
                 const zipBlob = await zip.generateAsync({ type: 'blob', mimeType: 'application/zip' });
                 await triggerDownload(zipBlob, `${safePrefix}.zip`);
-                showToast(`✅ Saved ${items.length} design(s)!`, 2000);
+                showToast(`✅ Saved ${indices.length} design(s)!`, 2000);
             }
         } catch (err) { alert('error: ' + err.message); }
         finally { downloadBtn.disabled = false; }
