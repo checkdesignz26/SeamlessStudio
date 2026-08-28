@@ -5,7 +5,8 @@
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0, user-scalable=yes" name="viewport"/>
 <title>Seamless Studio | Pattern Resizer</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
 function updateSelectedSummary() {
   const count = document.getElementById("selectedCount");
   const checked = document.querySelectorAll(".product-checkbox:checked");
@@ -13,15 +14,6 @@ function updateSelectedSummary() {
   if (!count) return;
   count.textContent = (typeof originalImg !== "undefined" && originalImg) ? `${checked.length}/${total}` : `0/0`;
 }
-
-
-
-
-updateSelectedSummary();
-    } catch (e) {}
-  }, 120);
-});
-
 
 function resetSelections() {
   document.querySelectorAll(".product-checkbox").forEach(cb => {
