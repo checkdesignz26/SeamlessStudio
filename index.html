@@ -1270,7 +1270,7 @@ window.addEventListener("load", () => {
 <div class="header">
 <h1>✿ Seamless Studio ✿</h1>
 <div class="subtitle">Bringimg  your patterns to life... </div>
-<div style="margin-top:4px; font-size:11px; color:rgba(255,255,255,0.4); font-family:monospace;">build 2026-08-28-6</div>
+<div style="margin-top:4px; font-size:11px; color:rgba(255,255,255,0.4); font-family:monospace;">build 2026-08-29-1</div>
 <!-- <div style="margin-top:8px; font-size:13px; color:rgba(255,255,255,0.72);">Seamless items are auto-fitted. Non-seamless items can be resized in preview.</div>!-->
 </div>
 <div class="main-layout">
@@ -1460,6 +1460,15 @@ window.addEventListener("load", () => {
     let tiledImg = null;
     let patternWidth = 0;
     let patternHeight = 0;
+    // patternWidth/patternHeight are the DECODED WORKING canvas size (originalImg's actual
+    // pixel dimensions) — they can be smaller than the source file on devices with a decode
+    // cap (e.g. iPad Safari). patternNativeWidth/Height are the pattern's true, undownscaled
+    // pixel size and must be used for anything computing a physical/DPI-relative repeat count
+    // or scale (targetPx / patternPx), since that math assumes patternWidth reflects the
+    // pattern's real size, not an in-memory optimization. Pixel-level drawing (source rects,
+    // drawImage destination sizing) should keep using patternWidth/patternHeight as before.
+    let patternNativeWidth = 0;
+    let patternNativeHeight = 0;
     let tiledPatternWidth = 0;
     let tiledPatternHeight = 0;
     let currentTileMultiplier = 2;
@@ -1769,7 +1778,7 @@ window.addEventListener("load", () => {
     }
 
     function getAutoSeamlessScaleForCustom(productW, productH) {
-        if (!patternWidth || !patternHeight) return 1;
+        if (!patternNativeWidth || !patternNativeHeight) return 1;
         const safeW = Math.max(1, Number(productW) || 1);
         const safeH = Math.max(1, Number(productH) || 1);
 
@@ -1777,8 +1786,8 @@ window.addEventListener("load", () => {
         // Horizontal products use width as the seam axis, vertical/slim products can still use width here
         // because custom products should start with a visually repeated pattern.
         const targetRepeats = 2;
-        const scaleFromWidth = safeW / (patternWidth * targetRepeats);
-        const scaleFromHeight = safeH / (patternHeight * targetRepeats);
+        const scaleFromWidth = safeW / (patternNativeWidth * targetRepeats);
+        const scaleFromHeight = safeH / (patternNativeHeight * targetRepeats);
 
         // Use the smaller scale so both dimensions stay comfortably repeatable.
         const autoScale = Math.min(scaleFromWidth, scaleFromHeight, 1);
@@ -2206,13 +2215,13 @@ ctx.lineWidth = 1;
     }
 
     function calculatePerfectSeamlessScale(product) {
-        if (!patternWidth || !patternHeight) return 1;
+        if (!patternNativeWidth || !patternNativeHeight) return 1;
 
         const axis = getSeamAxis(product);
         let bestScale = 1;
 
         for (let repeats = 1; repeats <= 24; repeats++) {
-            const basis = axis === "horizontal" ? patternHeight : patternWidth;
+            const basis = axis === "horizontal" ? patternNativeHeight : patternNativeWidth;
             const target = axis === "horizontal" ? product.h : product.w;
             const candidateScale = target / (basis * repeats);
             if (candidateScale >= 0.005 && candidateScale <= 4.0) {
@@ -2270,9 +2279,9 @@ ctx.lineWidth = 1;
     }
 
     function getScaleForWrapRepeats(product, repeatCount) {
-        if (!patternWidth || !patternHeight) return 1;
+        if (!patternNativeWidth || !patternNativeHeight) return 1;
         const axis = getSeamAxis(product);
-        const basis = axis === "horizontal" ? patternHeight : patternWidth;
+        const basis = axis === "horizontal" ? patternNativeHeight : patternNativeWidth;
         const target = axis === "horizontal" ? product.h : product.w;
         const count = Math.max(0.5, Math.min(12, Number(repeatCount) || 1));
         return Math.max(0.005, Math.min(4.0, target / Math.max(1, basis * count)));
@@ -2305,9 +2314,9 @@ ctx.lineWidth = 1;
     }
 
     function getCurrentWrapRepeatCount(product, index) {
-        if (!product || !patternWidth || !patternHeight) return 1;
+        if (!product || !patternNativeWidth || !patternNativeHeight) return 1;
         const axis = getSeamAxis(product);
-        const basis = axis === "horizontal" ? patternHeight : patternWidth;
+        const basis = axis === "horizontal" ? patternNativeHeight : patternNativeWidth;
         const target = axis === "horizontal" ? product.h : product.w;
         const renderScale = Math.max(0.005, getRenderScale(product, index) || 1);
         return Math.max(0.5, target / Math.max(1, basis * renderScale));
@@ -2324,7 +2333,7 @@ function getWrapRepeatMetrics(product, requestedScale) {
         const targetH = product.h;
         const seamAxis = getSeamAxis(product);
 
-        if (!patternWidth || !patternHeight) {
+        if (!patternNativeWidth || !patternNativeHeight) {
             return {
                 repeatsX: 1,
                 repeatsY: 1,
@@ -2338,12 +2347,16 @@ function getWrapRepeatMetrics(product, requestedScale) {
 
         const safeScale = Math.max(0.005, Math.min(4.0, requestedScale || 1));
 
+        // Repeat counts and effectiveScale must be derived from the pattern's true native
+        // size, not the (possibly decode-capped) working resolution — see patternNativeWidth
+        // comment above. tileW/tileH stay valid as drawImage() destination sizes regardless
+        // of originalImg's actual pixel size, since drawImage auto-scales from the source.
         if (seamAxis === "horizontal") {
-            const idealRepeatsY = targetH / Math.max(1, patternHeight * safeScale);
+            const idealRepeatsY = targetH / Math.max(1, patternNativeHeight * safeScale);
             const repeatsY = Math.max(1, Math.min(24, Math.round(idealRepeatsY)));
             const tileH = targetH / repeatsY;
-            const effectiveScale = tileH / patternHeight;
-            const tileW = patternWidth * effectiveScale;
+            const effectiveScale = tileH / patternNativeHeight;
+            const tileW = patternNativeWidth * effectiveScale;
             const repeatsX = Math.max(1, Math.ceil(targetW / Math.max(1, tileW)));
 
             return {
@@ -2357,11 +2370,11 @@ function getWrapRepeatMetrics(product, requestedScale) {
             };
         }
 
-        const idealRepeatsX = targetW / Math.max(1, patternWidth * safeScale);
+        const idealRepeatsX = targetW / Math.max(1, patternNativeWidth * safeScale);
         const repeatsX = Math.max(1, Math.min(24, Math.round(idealRepeatsX)));
         const tileW = targetW / repeatsX;
-        const effectiveScale = tileW / patternWidth;
-        const tileH = patternHeight * effectiveScale;
+        const effectiveScale = tileW / patternNativeWidth;
+        const tileH = patternNativeHeight * effectiveScale;
         const repeatsY = Math.max(1, Math.ceil(targetH / Math.max(1, tileH)));
 
         return {
@@ -3545,6 +3558,8 @@ function regenerateAllCanvases() {
             originalImg = prep.image;
             patternWidth = Math.round(prep.width || 0);
             patternHeight = Math.round(prep.height || 0);
+            patternNativeWidth = Math.round(prep.originalWidth || patternWidth || 0);
+            patternNativeHeight = Math.round(prep.originalHeight || patternHeight || 0);
             preparedImageInfo = prep;
 
             if (!patternWidth || !patternHeight) {
@@ -3622,6 +3637,8 @@ function regenerateAllCanvases() {
         tiledImg = null;
         patternWidth = 0;
         patternHeight = 0;
+        patternNativeWidth = 0;
+        patternNativeHeight = 0;
         tiledPatternWidth = 0;
         tiledPatternHeight = 0;
         sourceFileMime = '';
